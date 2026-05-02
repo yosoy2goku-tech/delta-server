@@ -1,7 +1,7 @@
 const http = require("http");
 const fs   = require("fs");
 
-const PORT       = 3000;
+const PORT       = process.env.PORT || 3000;
 const KEYS_FILE  = "./keys.json";
 const ADMIN_PASS = "delta2026";
 
@@ -21,13 +21,8 @@ function rand(n) {
     s += CHARS[Math.floor(Math.random() * CHARS.length)];
   return s;
 }
-function buildKey(format) {
-  switch (format) {
-    case "short":  return `DLT-${rand(5)}-${rand(5)}`;
-    case "long":   return `DELTA-${rand(4)}-${rand(4)}-${rand(4)}-${rand(4)}-${rand(4)}`;
-    case "custom": return `DDLT-${rand(8)}-${rand(8)}`;
-    default:       return `DELTA-${rand(4)}-${rand(4)}-${rand(4)}-${rand(4)}`;
-  }
+function buildKey() {
+  return `DELTA-${rand(4)}-${rand(4)}-${rand(4)}-${rand(4)}`;
 }
 function parseBody(req) {
   return new Promise(resolve => {
@@ -65,10 +60,7 @@ http.createServer(async (req, res) => {
   const method = req.method;
 
   if (method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type, X-Admin-Password"
-    });
+    res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, X-Admin-Password" });
     return res.end();
   }
 
@@ -85,13 +77,28 @@ http.createServer(async (req, res) => {
     return respond(res, 200, { status: "VALID", message: "Key activa", type: entry.type, expiry: entry.expiry || "Lifetime", uses: keys[key].uses });
   }
 
+  if (method === "POST" && path === "/getkey") {
+    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+    const keys = loadKeys();
+    const existing = Object.entries(keys).find(([k, v]) => {
+      return v.ip === ip && v.type === "USER" && !isExpired(v);
+    });
+    if (existing) {
+      return respond(res, 200, { key: existing[0], expiry: existing[1].expiry, cached: true });
+    }
+    const key    = buildKey();
+    const expiry = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    keys[key] = { type: "USER", created: new Date().toISOString(), expiry, uses: 0, last_used: null, ip };
+    saveKeys(keys);
+    return respond(res, 200, { key, expiry, cached: false });
+  }
+
   if (method === "POST" && path === "/generate") {
     if (req.headers["x-admin-password"] !== ADMIN_PASS) return respond(res, 403, { error: "Contrasena incorrecta" });
     const body   = await parseBody(req);
-    const format = body.format || "standard";
-    const type   = body.type   || "BASIC";
+    const type   = body.type || "BASIC";
     const days   = parseInt(body.days ?? 30);
-    const key    = buildKey(format);
+    const key    = buildKey();
     const expiry = days === 0 ? null : (() => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString(); })();
     const keys   = loadKeys();
     keys[key]    = { type, created: new Date().toISOString(), expiry, uses: 0, last_used: null };
